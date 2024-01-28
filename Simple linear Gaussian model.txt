@@ -1,0 +1,307 @@
+
+rm(list=ls())
+suppressWarnings({library(MASS)})
+suppressWarnings({library(ggplot2)})
+suppressWarnings({library(gridExtra)})
+suppressWarnings({library(FKF)})
+suppressWarnings({library(pmhtutorial)})
+#--------------------------------------------------------------------
+#                           Q1
+#--------------------------------------------------------------------
+set.seed(123456)
+simu_func<-function(T,phi,sigma2_V,sigma2_W){
+X<-V<-Y<-W<-numeric(T)
+X[1]<-rnorm(1,0,1)
+for(t in 2:T){
+V[t]<-rnorm(1,0,1)
+X[t]<-(phi*X[t-1])+(sqrt(sigma2_V)*V[t])
+W[t]<-rnorm(1,0,1)
+Y[t]<-X[t]+(sqrt(sigma2_W)*W[t])
+}
+return(list(X=X,Y=Y))
+}
+observ_data<-simu_func(100,0.95,1,1)
+lable<-c(rep("X",100),rep("Y",100))
+observation<-c(observ_data$X,observ_data$Y)
+result_data<-data.frame(observation,lable)
+Dataset<-factor(lable)
+plot_data<-ggplot(result_data,aes(x=rep(1:100,2),
+           y=observation,group=factor(lable),colour=Dataset))+
+           geom_line(size=0.8)+xlab("Time")+ylab("Observation")+
+           scale_color_manual(name="",values=c("X"="blue","Y"="red"),labels=c("X","Y"))+
+           theme(legend.position="bottom")
+observ_data
+plot_data
+#--------------------------------------------------------------------
+#                           Q2
+#--------------------------------------------------------------------
+Kalm_filt_func<-function(T,phi,sigma2_V,sigma2_W,y){
+mu<-kalmanFilter(y,theta=c(phi,sqrt(sigma2_V),sqrt(sigma2_W)),initialState=0,
+                 initialStateCovariance=1)$xHatFiltered
+return(list(Kalman_Filter=c(mu)))
+}
+estimates<-Kalm_filt_func(100,0.95,1,1,observ_data$Y)
+Kalman_Filter<-estimates$Kalman_Filter
+plot_Kalman_Filter<-ggplot(data.frame(estimates$Kalman_Filter),
+         aes(x=1:100,y=estimates$Kalman_Filter))+ 
+         geom_line(size=0.8,colour="blue")+
+         xlab("Iteration")+ylab(expression(E(x[t]~"|"~y[1:t])))+
+         ggtitle("Kalman Filter")
+Kalman_Filter
+plot_Kalman_Filter
+
+#--------------------------------------------------------------------
+#                           Q3-Q4-Q5
+#--------------------------------------------------------------------
+
+#--------------------------------------------------------------------
+#                Sequential Importance Sampler (SIS) 
+#--------------------------------------------------------------------
+set.seed(123456)
+SIS_func<-function(T,phi,sigma2_V,sigma2_W,x,y,N){
+g_Prior<-function(y,x)dnorm(y,mean=x,sd=sqrt(sigma2_W))
+p<-function(y,x)dnorm(y,mean=phi*x,sd=sqrt(sigma2_V+sigma2_W))
+
+X_hat_prior<-sample_var_prior<-numeric(T)
+X_mat_prior<-wei_prior<-matrix(NA,nrow=T,ncol=N)
+X_mat_prior[1,]<-rnorm(N,0,1)
+wei_prior[1,]<-g_Prior(y[1],X_mat_prior[1,])
+X_hat_prior[1]<-sum(wei_prior[1,]*X_mat_prior[1,])/sum(wei_prior[1,])
+sample_var_prior[1]<-sum(wei_prior[1,]*((X_mat_prior[1,]-X_hat_prior[1])^2))/(sum(wei_prior[1,]))
+ESS_prior<-numeric(T)
+ESS_prior[1]<-((sum(wei_prior[1,]))^2)/sum(wei_prior[1,]^2)
+#--------------------------------------
+X_hat_opt<-sample_var_opt<-numeric(T)
+X_mat_opt<-wei_opt<-matrix(NA,nrow=T,ncol=N)
+sigma_prop_opt<-(sigma2_V*sigma2_W)/(sigma2_V+sigma2_W)
+mean_prop_opt<-sigma_prop_opt*(((phi*x)/sigma2_V)+(y[1]/sigma2_W))
+X_mat_opt[1,]<-rnorm(N,mean_prop_opt,sqrt(sigma_prop_opt))
+wei_opt[1,]<-p(y[1],x)
+X_hat_opt[1]<-sum(wei_opt[1,]*X_mat_opt[1,])/sum(wei_opt[1,])
+sample_var_opt[1]<-sum(wei_opt[1,]*((X_mat_opt[1,]-X_hat_opt[1])^2))/(sum(wei_opt[1,]))
+ESS_opt<-numeric(T)
+ESS_opt[1]<-((sum(wei_opt[1,]))^2)/sum(wei_opt[1,]^2)
+
+for(t in 2:T){
+X_mat_prior[t,]<-rnorm(N,phi*X_mat_prior[t-1,],sigma2_V)
+wei_prior[t,]<-wei_prior[t-1,]*g_Prior(y[t],X_mat_prior[t,])
+X_hat_prior[t]<-(sum(wei_prior[t,]*X_mat_prior[t,]))/sum(wei_prior[t,])
+sample_var_prior[t]<-sum(wei_prior[t,]*((X_mat_prior[t,]-X_hat_prior[t])^2))/(sum(wei_prior[t,]))
+ESS_prior[t]<-((sum(wei_prior[t,]))^2)/sum(wei_prior[t,]^2)
+
+mean_prop_opt<-sigma_prop_opt*(((phi*X_mat_opt[t-1,])/sigma2_V)+(y[t]/sigma2_W))
+X_mat_opt[t,]<-rnorm(N,mean_prop_opt,sqrt(sigma_prop_opt))
+wei_opt[t,]<-p(y[t],X_mat_opt[t-1,])
+X_hat_opt[t]<-(sum(wei_opt[t,]*X_mat_opt[t,]))/sum(wei_opt[t,])
+sample_var_opt[t]<-sum(wei_opt[t,]*((X_mat_opt[t,]-X_hat_opt[t])^2))/(sum(wei_opt[t,]))
+ESS_opt[t]<-((sum(wei_opt[t,]))^2)/sum(wei_opt[t,]^2)
+
+}
+return(list(X_mat_prior=X_mat_prior,X_mat_opt=X_mat_opt,
+            wei_prior=wei_prior,wei_opt=wei_opt,
+            Mu_hat_prior=X_hat_prior,s2_hat_prior=sample_var_prior,
+            Mu_hat_opt=X_hat_opt,s2_hat_opt=sample_var_opt,ESS_prior=ESS_prior,ESS_opt=ESS_opt))
+}
+#--------------------------------------------------------------------
+#                           Q3
+#--------------------------------------------------------------------
+set.seed(123456)
+estimates_SIS<-SIS_func(100,0.95,1,1,observ_data$X,observ_data$Y,1000)
+
+lable1<-c(rep("Kalman Filter",100),rep("Optimal",100),rep("Prior",100))
+estimators<-c(estimates$Kalman_Filter,estimates_SIS$Mu_hat_opt,estimates_SIS$Mu_hat_prior)
+result_estim_mu<-data.frame(estimators,lable1)
+Estimators1<-factor(lable1)
+plot_Mu_hat<-ggplot(result_estim_mu,aes(x=rep(1:100,3),
+           y=estimators,group=factor(lable1),colour=Estimators1))+
+           geom_line(size=0.8)+
+           ylab(expression(hat(E)(x[t]~"|"~y[1:t])))+xlab("Time")+
+           scale_colour_manual(name="",values=c("Kalman Filter"="blue","Optimal"="green","Prior"="red"), 
+           labels=c("Kalman Filter","Optimal","Prior")) +
+           theme(legend.position="bottom")
+plot_Mu_hat
+#-------------------------------------------------------------------------------
+#                           Q4
+#-------------------------------------------------------------------------------
+set.seed(123456)
+N_seq<-seq(500,3000,100)
+var_samp_prior<-var_samp_opt<-matrix(NA,100,length(N_seq))
+for(i in 1:length(N_seq)){
+var_initi<-SIS_func(100,0.95,1,1,observ_data$X,observ_data$Y,N_seq[i])
+var_samp_prior[,i]<-var_initi$s2_hat_prior
+var_samp_opt[,i]<-var_initi$s2_hat_opt
+}
+lable21<-c(rep("Optimal",100),rep("Prior",100))
+lable22<-c(rep("Optimal",26),rep("Prior",26))
+result_estimators_var1<-data.frame(c(var_samp_opt[,6],var_samp_prior[,6]),lable21)
+result_estimators_var2<-data.frame(c(var_samp_opt[50,],var_samp_prior[50,]),lable22)
+variance1<-factor(lable21)
+variance2<-factor(lable22)
+
+plot_s2_N_fix<-ggplot(result_estimators_var1,aes(x=rep(1:100,2),
+           y=result_estimators_var1[,1],group=factor(lable21),colour=variance1))+
+           geom_line(size=0.8)+
+           ylab("Sample Variance")+xlab("Time")+
+           scale_colour_manual(name="",values=c("Optimal"="blue","Prior"="red"), 
+           labels=c("Optimal","Prior"))+ggtitle("N is fixed(N=1000)")+
+           theme(legend.position="bottom")
+
+plot_s2_t_fix<-ggplot(result_estimators_var2,aes(x=rep(1:26,2),
+           y=result_estimators_var2[,1],group=factor(lable22),colour=variance2))+
+           geom_line(size=0.8)+
+           ylab("Sample Variance")+xlab("Iteration")+
+           scale_colour_manual(name="",values=c("Optimal"="blue","Prior"="red"), 
+           labels=c("Optimal","Prior"))+ggtitle("t is fixed(t=50)")+
+           theme(legend.position="bottom")
+
+grid.arrange(plot_s2_N_fix,plot_s2_t_fix,ncol=1)
+#--------------------------------------------------------------------
+#                             Q5
+#--------------------------------------------------------------------
+estimates_SIS2<-SIS_func(100,0.95,1,1,observ_data$X,observ_data$Y,1000)
+lable3<-c(rep("Kalman Filter",100),rep("Optimal",100))
+estimators3<-c(estimates$Kalman_Filter,estimates_SIS2$Mu_hat_opt)
+result_estim_mu2<-data.frame(estimators3,lable3)
+Estimators3<-factor(lable3)
+plot_Mu_hat_opt<-ggplot(result_estim_mu2,aes(x=rep(1:100,2),
+           y=estimators3,group=factor(lable3),colour=Estimators3))+
+           geom_line(size=0.8)+
+           ylab(expression(hat(E)(x[t]~"|"~y[1:t])))+xlab("Time")+
+           scale_colour_manual(name="",values=c("Kalman Filter"="blue","Optimal"="green","Prior"="red"), 
+           labels=c("Kalman Filter","Optimal","Prior")) +
+           theme(legend.position="bottom")
+plot_Mu_hat_opt
+#--------------------------------------------------------------------
+p_hat_opt_func<-function(t,x_SIS,w,x,N){
+delta<-wei_new<-numeric(N)
+for(i in 1:N){
+deltaa<-as.numeric(x_SIS[t,i]<=x[t])
+#if(length(deltaa[deltaa==0])==0){
+delta[i]<-sum(deltaa)
+#}else{
+#delta[i]<-0
+#}
+wei_new[i]<-w[t,i]
+}
+estim_p<-sum(delta*w[t,])/sum(w[t,])
+return(list(estim_p=estim_p))
+}
+
+
+estimates_SIS2<-SIS_func(100,0.95,1,1,observ_data$X,observ_data$Y,1000)
+p_hat_value<-p_exact<-numeric(100)
+X_init<-rnorm(1,0,sqrt(1/2))
+for(t in 1:100){
+p_hat_value[t]<-p_hat_opt_func(t,estimates_SIS2$X_mat_opt,
+              estimates_SIS2$wei_opt,observ_data$X,1000)$estim_p
+sigma<-1/2
+b<-0.95*X_init
+mean_init<-sigma*(observ_data$Y[t]+b)
+p_exact[t]<-pnorm(observ_data$X[t],mean=mean_init,sd=sqrt(sigma))
+X_init<-observ_data$X[t]
+}
+p_hat_value
+p_exact
+
+lable3<-c(rep("Kalman Filter",100),rep("Optimal",100))
+estimators3<-c(p_exact,p_hat_value)
+result_estim_mu2<-data.frame(estimators3,lable3)
+Estimators3<-factor(lable3)
+plot_p_hat_opt<-ggplot(result_estim_mu2,aes(x=rep(1:100,2),
+           y=estimators3,group=factor(lable3),colour=Estimators3))+
+           geom_line(size=0.8)+
+           ylab(expression(hat(P)(x[1:t]~"|"~y[1:t])))+xlab("Time")+
+           scale_colour_manual(name="",values=c("Kalman Filter"="blue","Optimal"="green","Prior"="red"), 
+           labels=c("Kalman Filter","Optimal","Prior")) +
+           theme(legend.position="bottom")
+plot_p_hat_opt
+
+
+
+#--------------------------------------------------------------------
+#                           Q6
+#--------------------------------------------------------------------
+#--------------------------------------------------------------------
+#               Metropolis Sampler(MH Sampler) 
+#--------------------------------------------------------------------
+
+MH_sampler<-function(T,phi,sigma2_V,sigma2_W,x,y,N){
+
+density_func<-function(x,y){
+sum_value<-log(dnorm(x[1],mean=0,sd=1))+log(dnorm(y[1],mean=x[1],sd=sqrt(sigma2_W)))
+for(t in 2:T){
+sum_value<-sum_value+log(dnorm(x[t],mean=phi*x[t-1],sd=sqrt(sigma2_V)))
+           +log(dnorm(y[t],mean=x[t],sd=sqrt(sigma2_W)))
+}
+sum_value
+}
+X_mat_MH<-matrix(NA,nrow=T,ncol=N)
+X_mat_MH_init<-estimates_SIS$Mu_hat_opt
+k<-0
+for(i in 1:N){
+X_star<-rnorm(T,X_mat_MH_init,sqrt(0.01))
+F1<-density_func(X_star,y)
+F2<-density_func(X_mat_MH_init,y)
+rho<-F1-F2
+if(runif(1)<exp(rho)){
+X_mat_MH[,i]<-X_star
+k<-k+1
+}else{
+X_mat_MH[,i]<-X_mat_MH_init
+}
+X_mat_MH_init<-X_mat_MH[,i]
+}
+X_hat_MH<-apply(X_mat_MH,1,mean)
+return(list(Mu_hat_MH=X_hat_MH,accept_rate=k/N))
+}
+estimates_MH<-MH_sampler(100,0.95,1,1,observ_data$X,observ_data$Y,1000)
+estimates_MH$accept_rate
+
+lable3<-c(rep("Kalman Filter",100),rep("MH",100))
+estimators_MH<-c(estimates$Kalman_Filter,estimates_MH$Mu_hat_MH)
+result_estim_mu_MH<-data.frame(estimators_MH,lable3)
+Estimators3<-factor(lable3)
+plot_Mu_hat_MH<-ggplot(result_estim_mu_MH,aes(x=rep(1:100,2),
+           y=estimators_MH,group=factor(lable3),colour=Estimators3))+
+           geom_line(size=0.8)+
+           ylab(expression(hat(E)(x[t]~"|"~y[1:t])))+xlab("Time")+
+           scale_colour_manual(name="",values=c("Kalman Filter"="blue","MH"="red"), 
+           labels=c("Kalman Filter","MH"))+ggtitle("Metropolis approach")+
+           theme(legend.position="bottom")
+
+#--------------------------------------------------------------------
+#               Gibbs Sampler(Gibbs Sampler) 
+#--------------------------------------------------------------------
+Gibbs_sampler<-function(T,phi,sigma2_V,sigma2_W,x,y,N){
+X_gibbs<-matrix(0,nrow=T,ncol=N)
+mean_init<-0
+sigma_init<-(1/(1+(1/(sigma2_W^2))))
+X_init<-rnorm(N,mean_init,sqrt(sigma_init))
+for(t in 1:T){
+b<-phi*X_init
+sigma<-1/(1/sigma2_W^2+1/sigma2_V^2)
+mean_init<-sigma*(y[t]/sigma2_W^2+b/sigma2_V^2)
+X_gibbs[t,]<-rnorm(N,mean=mean_init,sd=sqrt(sigma))
+X_init<-X_gibbs[t,]
+}
+X_hat_Gibbs<-apply(X_gibbs,1,mean)
+return(list(Mu_hat_Gibbs=X_hat_Gibbs))
+}
+estimates_Gibbs<-Gibbs_sampler(100,0.95,1,1,observ_data$X,observ_data$Y,1000)
+
+lable4<-c(rep("Gibbs",100),rep("Kalman Filter",100))
+estimators_Gibbs<-c(estimates$Kalman_Filter,estimates_Gibbs$Mu_hat_Gibbs)
+result_estim_mu_Gibbs<-data.frame(estimators_Gibbs,lable4)
+Estimators4<-factor(lable4)
+plot_Mu_hat_Gibbs<-ggplot(result_estim_mu_Gibbs,aes(x=rep(1:100,2),
+           y=estimators_Gibbs,group=factor(lable4),colour=Estimators4))+
+           geom_line(size=0.8)+
+           ylab(expression(hat(E)(x[t]~"|"~y[1:t])))+xlab("Time")+
+           scale_colour_manual(name="",values=c("Gibbs"="red","Kalman Filter"="blue"), 
+           labels=c("Gibbs","Kalman Filter"))+ggtitle("Gibbs approach")+
+           theme(legend.position="bottom")
+#--------------------------------------------------------------------
+
+grid.arrange(plot_Mu_hat_MH,plot_Mu_hat_Gibbs,ncol=1)
+
+
